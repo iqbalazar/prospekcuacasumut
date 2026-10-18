@@ -28,14 +28,38 @@ MIN_LAT = -12.9974183620374362
 MAX_LON = 143.7735419591668915
 MAX_LAT = 10.1613314540829798
 
-# Palet warna diperbarui sesuai permintaan user (RGB spesifik)
+# Palet warna diperbarui dengan penambahan warna transisi (interpolasi) 
+# agar KDTree tidak salah mengelompokkan warna gradien (overestimate)
 kategori_hujan = [
+    # Hujan Ekstrem (Prioritas 1) - Ungu/Pink
     {"kategori": "Hujan Ekstrem", "rgb": [255, 0, 255], "prioritas": 1, "hex": "#FF00FF"},
+    {"kategori": "Hujan Ekstrem", "rgb": [220, 20, 190], "prioritas": 1, "hex": "#FF00FF"}, 
+    
+    # Hujan Sangat Lebat (Prioritas 2) - Merah
     {"kategori": "Hujan Sangat Lebat", "rgb": [255, 0, 0], "prioritas": 2, "hex": "#FF0000"},
+    {"kategori": "Hujan Sangat Lebat", "rgb": [235, 33, 33], "prioritas": 2, "hex": "#FF0000"},
+    
+    # Hujan Lebat (Prioritas 3) - Oranye
     {"kategori": "Hujan Lebat", "rgb": [255, 155, 0], "prioritas": 3, "hex": "#FF9B00"},
+    {"kategori": "Hujan Lebat", "rgb": [245, 131, 34], "prioritas": 3, "hex": "#FF9B00"},
+    {"kategori": "Hujan Lebat", "rgb": [240, 100, 30], "prioritas": 3, "hex": "#FF9B00"},
+    
+    # Hujan Sedang (Prioritas 4) - Kuning
     {"kategori": "Hujan Sedang", "rgb": [255, 255, 0], "prioritas": 4, "hex": "#FFFF00"},
+    {"kategori": "Hujan Sedang", "rgb": [249, 239, 36], "prioritas": 4, "hex": "#FFFF00"},
+    {"kategori": "Hujan Sedang", "rgb": [255, 220, 0], "prioritas": 4, "hex": "#FFFF00"},
+    
+    # Hujan Ringan (Prioritas 5) - Hijau Muda hingga Kuning Kehijauan (0.5 - 20mm)
     {"kategori": "Hujan Ringan", "rgb": [0, 255, 0], "prioritas": 5, "hex": "#00FF00"},
-    {"kategori": "Cerah / Berawan", "rgb": [255, 255, 255], "prioritas": 6, "hex": "#FFFFFF"}
+    {"kategori": "Hujan Ringan", "rgb": [136, 249, 134], "prioritas": 5, "hex": "#00FF00"},
+    {"kategori": "Hujan Ringan", "rgb": [170, 250, 60], "prioritas": 5, "hex": "#00FF00"},
+    {"kategori": "Hujan Ringan", "rgb": [190, 255, 100], "prioritas": 5, "hex": "#00FF00"},
+    
+    # Cerah / Berawan (Prioritas 6) - Putih/Abu
+    {"kategori": "Cerah / Berawan", "rgb": [255, 255, 255], "prioritas": 6, "hex": "#FFFFFF"},
+    {"kategori": "Cerah / Berawan", "rgb": [220, 240, 220], "prioritas": 6, "hex": "#FFFFFF"},
+    {"kategori": "Cerah / Berawan", "rgb": [200, 200, 200], "prioritas": 6, "hex": "#FFFFFF"},
+    {"kategori": "Cerah / Berawan", "rgb": [180, 180, 180], "prioritas": 6, "hex": "#FFFFFF"}
 ]
 
 # Untuk Legenda Map dan Tabel
@@ -117,7 +141,7 @@ uploaded_files = st.file_uploader("Upload Gambar Prediksi Hujan (.jpg / .png)", 
 
 if uploaded_files:
     if st.button("Proses Intensitas Hujan", type="primary", use_container_width=True):
-        with st.spinner("Sedang memindai koordinat, mengekstrak warna, dan memotong wilayah..."):
+        with st.spinner("Sedang memindai koordinat, menyusutkan poligon perbatasan, dan mengekstrak warna..."):
             
             gdf = gpd.read_file(FILE_SHP)
             if gdf.crs != "EPSG:4326":
@@ -172,10 +196,28 @@ if uploaded_files:
                         continue
 
                     polygon = row['geometry']
-                    pixels_rgb = get_pixels_in_polygon(polygon, img_array)
                     
+                    # --- FITUR NEGATIVE BUFFER (OFFSET) ---
+                    # Menyusutkan area poligon ke dalam sebesar 0.08 derajat (~8-9 km)
+                    # Ini mencegah warna dari garis batas tepi (border) terbaca oleh sistem
+                    polygon_shrunk = polygon.buffer(-0.0623)
+                    
+                    # Pencegahan error jika pulau / poligon terlalu kecil hingga hilang saat disusutkan
+                    if polygon_shrunk.is_empty:
+                        polygon_shrunk = polygon.buffer(-0.035)
+                        if polygon_shrunk.is_empty:
+                            polygon_shrunk = polygon  # Kembali ke ukuran asli jika masih hilang
+                    
+                    pixels_rgb = get_pixels_in_polygon(polygon_shrunk, img_array)
+                    
+                    # Cek jika poligon tidak kosong / masih memiliki pixel
+                    if len(pixels_rgb) > 0 and len(pixels_rgb.shape) > 1:
+                        # Hapus pixel hitam/gelap pekat (garis batas provinsi, pulau, teks)
+                        mask_bukan_hitam = (pixels_rgb[:, 0] > 30) | (pixels_rgb[:, 1] > 30) | (pixels_rgb[:, 2] > 30)
+                        pixels_rgb = pixels_rgb[mask_bukan_hitam]
+
                     if len(pixels_rgb) == 0:
-                        kategori_tertinggi = "Di Luar Peta"
+                        kategori_tertinggi = "Cerah / Berawan"
                         hex_color = "#FFFFFF"
                     else:
                         distances, indices = tree_warna.query(pixels_rgb)
@@ -218,7 +260,7 @@ if uploaded_files:
                 else:
                     semua_laporan = pd.merge(semua_laporan, df_harian, on="Kabupaten_Kota")
                 
-                # Simpan gdf harian untuk peta
+                # Simpan gdf harian untuk peta (Peta tetap menggunakan poligon utuh tanpa disusutkan untuk display)
                 st.session_state.gdf_hasil_list[header_kolom] = gdf.merge(df_harian, left_on=FIELD_NAMA_KABUPATEN, right_on="Kabupaten_Kota")
 
             st.session_state.df_laporan_gabungan = semua_laporan
