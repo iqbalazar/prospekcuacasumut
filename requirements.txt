@@ -1,0 +1,11 @@
+streamlit
+geopandas
+numpy
+pandas
+scipy
+folium
+streamlit-folium
+Pillow
+shapely
+matplotlib
+openpyxl
